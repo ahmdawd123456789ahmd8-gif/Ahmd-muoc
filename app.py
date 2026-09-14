@@ -3,7 +3,7 @@ from telebot import types
 import os, time, requests, threading
 from flask import Flask, request
 
-BOT_TOKEN = "8782692723:AAGSY03vhqb0UboHnhqwcRl5E79C6FezMdE"
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_ID = 8460989245
 
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
