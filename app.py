@@ -64,9 +64,9 @@ def process_media(bot, chat_id, file_id, ext, msg_id):
 
         bot.edit_message_text("🎵 جاري فصل الصوت عن الفيديو...", chat_id, msg_id)
 
-        # 2. استخراج الصوت من الفيديو باستخدام ffmpeg
+        # 2. استخراج الصوت من الفيديو بجودة عالية (44.1kHz، stereo)
         audio_path = f"audio_{chat_id}.wav"
-        os.system(f"ffmpeg -y -i {input_video_path} -vn -acodec pcm_s16le -ar 16000 -ac 1 {audio_path}")
+        os.system(f"ffmpeg -y -i {input_video_path} -vn -acodec pcm_s16le -ar 44100 -ac 2 {audio_path}")
 
         if not os.path.exists(audio_path):
             bot.edit_message_text("❌ فشل استخراج الصوت من الفيديو.", chat_id, msg_id)
@@ -74,12 +74,12 @@ def process_media(bot, chat_id, file_id, ext, msg_id):
 
         bot.edit_message_text("🤖 جاري فصل الغناء عن الموسيقى... (قد يستغرق بعض الوقت)", chat_id, msg_id)
 
-        # 3. إرسال الصوت إلى مساحة AudioSep
+        # 3. إرسال الصوت إلى مساحة AudioSep - استخدام "vocals" بدلاً من "speech"
         client = Client(AUDIOSEP_SPACE)
 
         result = client.predict(
             audio_file_path=handle_file(audio_path),
-            text="speech",
+            text="vocals",
             api_name="/separate"
         )
 
@@ -101,9 +101,9 @@ def process_media(bot, chat_id, file_id, ext, msg_id):
 
         bot.edit_message_text("🎬 جاري دمج صوت الأشخاص مع الفيديو...", chat_id, msg_id)
 
-        # 5. دمج صوت الأشخاص مع الفيديو الأصلي
+        # 5. دمج صوت الأشخاص مع الفيديو الأصلي بجودة عالية
         final_video_path = f"final_{chat_id}.mp4"
-        os.system(f"ffmpeg -y -i {input_video_path} -i {vocals_path} -c:v copy -map 0:v:0 -map 1:a:0 -shortest {final_video_path}")
+        os.system(f"ffmpeg -y -i {input_video_path} -i {vocals_path} -c:v copy -c:a aac -b:a 192k -map 0:v:0 -map 1:a:0 -shortest {final_video_path}")
 
         if not os.path.exists(final_video_path):
             bot.edit_message_text("❌ فشل دمج الصوت مع الفيديو.", chat_id, msg_id)
