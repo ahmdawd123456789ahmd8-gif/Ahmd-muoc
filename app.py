@@ -2,127 +2,191 @@ import telebot
 from telebot import types
 import os, time, requests, threading
 from flask import Flask, request
-from gradio_client import Client, handle_file
+import replicate
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
+REPLICATE_API_TOKEN = os.environ.get('REPLICATE_API_TOKEN')
 ADMIN_ID = 8460989245
 
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 app = Flask(__name__)
 user_states = {}
 
-AUDIOSEP_SPACE = "Luminia/audiosep"
+# رابط بوت الصوت (اختياري)
+AUDIO_BOT_LINK = "https://t.me/your_audio_bot"
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     markup = types.InlineKeyboardMarkup(row_width=1)
-    btn = types.InlineKeyboardButton("🎵 فصل الغناء عن الموسيقى", callback_data="start_separation")
+    btn = types.InlineKeyboardButton("🎵 فصل الموسيقى عن الفيديو", callback_data="start_separation")
     markup.add(btn)
-    bot.send_message(message.chat.id, "أهلاً بك! 👋\n\nهذا البوت بيفصل صوت الأشخاص عن الموسيقى، ويرجعلك الفيديو بصوت الأشخاص فقط.\n👇 اضغط للبدء:", reply_markup=markup)
+    bot.send_message(
+        message.chat.id,
+        "أهلاً بك! 👋\n\n"
+        "هذا البوت بيفصل صوت الأشخاص عن الموسيقى.\n"
+        "👇 اضغط للبدء:",
+        reply_markup=markup
+    )
 
 @bot.callback_query_handler(func=lambda call: call.data == "start_separation")
 def handle_start(call):
     user_states[call.message.chat.id] = "waiting"
-    bot.edit_message_text("📤 أرسل الفيديو الآن (الحد الأقصى 50MB):", call.message.chat.id, call.message.message_id)
+    bot.edit_message_text(
+        "📤 أرسل الفيديو أو الملف الصوتي الآن (الحد الأقصى 50MB):",
+        call.message.chat.id,
+        call.message.message_id
+    )
 
-@bot.message_handler(content_types=['video', 'document'])
+@bot.message_handler(content_types=['video', 'audio', 'document'])
 def handle_media(message):
     if user_states.get(message.chat.id) != "waiting":
         return
 
-    file_size = 0
     file_id = None
-    ext = '.mp4'
+    file_size = 0
+    media_type = "video"
 
     if message.video:
-        file_id, file_size = message.video.file_id, message.video.file_size
+        file_id = message.video.file_id
+        file_size = message.video.file_size or 0
+        media_type = "video"
+    elif message.audio:
+        file_id = message.audio.file_id
+        file_size = message.audio.file_size or 0
+        media_type = "audio"
     elif message.document:
-        file_id, file_size = message.document.file_id, message.document.file_size
-        ext = os.path.splitext(message.document.file_name or 'file.mp4')[1] or '.mp4'
+        file_id = message.document.file_id
+        file_size = message.document.file_size or 0
+        media_type = "document"
+
+    if not file_id:
+        bot.reply_to(message, "⚠️ لم يتم التعرف على الملف.")
+        return
 
     if file_size > 50000000:
         bot.reply_to(message, "❌ الملف كبير كتير (أكثر من 50MB).")
         return
 
     user_states[message.chat.id] = None
-    msg = bot.reply_to(message, "⏳ جاري تحميل الفيديو والمعالجة... (قد يستغرق عدة دقائق)")
-    threading.Thread(target=process_media, args=(bot, message.chat.id, file_id, ext, msg.message_id)).start()
+    msg = bot.reply_to(message, "⏳ جاري تحميل الملف والمعالجة... (قد يستغرق عدة دقائق)")
+    threading.Thread(
+        target=process_media,
+        args=(bot, message.chat.id, file_id, media_type, msg.message_id)
+    ).start()
 
-def process_media(bot, chat_id, file_id, ext, msg_id):
-    input_video_path = None
+def upload_to_fileio(file_path):
+    """رفع الملف إلى file.io والحصول على رابط عام"""
+    try:
+        with open(file_path, 'rb') as f:
+            response = requests.post(
+                'https://file.io',
+                files={'file': f},
+                timeout=120
+            )
+        if response.status_code == 200:
+            result = response.json()
+            return result.get('link')
+        return None
+    except Exception as e:
+        print(f"Upload error: {e}")
+        return None
+
+def process_media(bot, chat_id, file_id, media_type, msg_id):
+    input_path = None
     audio_path = None
     vocals_path = None
-    final_video_path = None
 
     try:
-        # 1. تحميل الفيديو من تيليجرام
+        # 1. تحميل الملف من تيليجرام
         file_info = bot.get_file(file_id)
         downloaded_file = bot.download_file(file_info.file_path)
-        input_video_path = f"input_{chat_id}{ext}"
-        with open(input_video_path, 'wb') as f:
+
+        if media_type == "video":
+            input_path = f"input_{chat_id}.mp4"
+        else:
+            input_path = f"input_{chat_id}.mp3"
+
+        with open(input_path, 'wb') as f:
             f.write(downloaded_file)
 
-        bot.edit_message_text("🎵 جاري فصل الصوت عن الفيديو...", chat_id, msg_id)
+        # 2. إذا كان فيديو، نستخرج الصوت
+        if media_type == "video":
+            bot.edit_message_text("🎵 جاري فصل الصوت عن الفيديو...", chat_id, msg_id)
+            audio_path = f"audio_{chat_id}.mp3"
+            os.system(f"ffmpeg -y -i {input_path} -vn -acodec libmp3lame -q:a 2 {audio_path}")
+            if not os.path.exists(audio_path):
+                bot.edit_message_text("❌ فشل استخراج الصوت من الفيديو.", chat_id, msg_id)
+                return
+        else:
+            audio_path = input_path
 
-        # 2. استخراج الصوت من الفيديو بجودة عالية (44.1kHz، stereo)
-        audio_path = f"audio_{chat_id}.wav"
-        os.system(f"ffmpeg -y -i {input_video_path} -vn -acodec pcm_s16le -ar 44100 -ac 2 {audio_path}")
+        # 3. رفع الصوت إلى file.io
+        bot.edit_message_text("📤 جاري رفع الملف للمعالجة...", chat_id, msg_id)
+        public_url = upload_to_fileio(audio_path)
 
-        if not os.path.exists(audio_path):
-            bot.edit_message_text("❌ فشل استخراج الصوت من الفيديو.", chat_id, msg_id)
+        if not public_url:
+            bot.edit_message_text("❌ فشل رفع الملف.", chat_id, msg_id)
             return
 
-        bot.edit_message_text("🤖 جاري فصل الغناء عن الموسيقى... (قد يستغرق بعض الوقت)", chat_id, msg_id)
+        # 4. إرسال الطلب إلى Replicate
+        bot.edit_message_text("🤖 جاري فصل الغناء عن الموسيقى... (قد يستغرق دقيقة أو دقيقتين)", chat_id, msg_id)
 
-        # 3. إرسال الصوت إلى مساحة AudioSep - استخدام "vocals" بدلاً من "speech"
-        client = Client(AUDIOSEP_SPACE)
+        os.environ['REPLICATE_API_TOKEN'] = REPLICATE_API_TOKEN
 
-        result = client.predict(
-            audio_file_path=handle_file(audio_path),
-            text="vocals",
-            api_name="/separate"
+        output = replicate.run(
+            "cjwbw/demucs:25a173108cff36ef9f80f854c162d01df9e6528be175794b81158fa03836d953",
+            input={"audio": public_url}
         )
 
-        # 4. استلام ملف الغناء الناتج
-        vocals_data = result[0] if isinstance(result, tuple) else result
+        # 5. النتيجة تحتوي على روابط
+        if not output:
+            bot.edit_message_text("❌ فشلت المعالجة.", chat_id, msg_id)
+            return
+
+        # Replicate يعطي dict فيه: vocals, bass, drums, other
+        vocals_url = None
+        if isinstance(output, dict):
+            vocals_url = output.get('vocals')
+        elif isinstance(output, str):
+            vocals_url = output
+
+        if not vocals_url:
+            bot.edit_message_text("❌ لم يتم العثور على صوت الأشخاص.", chat_id, msg_id)
+            return
+
+        # 6. تنزيل ملف vocals
+        bot.edit_message_text("📥 جاري تنزيل صوت الأشخاص...", chat_id, msg_id)
+        vocals_response = requests.get(vocals_url, timeout=120)
         vocals_path = f"vocals_{chat_id}.wav"
 
-        if isinstance(vocals_data, str):
-            if vocals_data.startswith('http'):
-                r = requests.get(vocals_data)
-                with open(vocals_path, 'wb') as f:
-                    f.write(r.content)
-            else:
-                vocals_path = vocals_data
+        with open(vocals_path, 'wb') as f:
+            f.write(vocals_response.content)
 
-        if not vocals_path or not os.path.exists(vocals_path):
-            bot.edit_message_text("❌ فشلت عملية فصل الغناء.", chat_id, msg_id)
-            return
+        # 7. إرسال الملف النهائي
+        bot.edit_message_text("🎉 تمت العملية! جاري الإرسال...", chat_id, msg_id)
 
-        bot.edit_message_text("🎬 جاري دمج صوت الأشخاص مع الفيديو...", chat_id, msg_id)
-
-        # 5. دمج صوت الأشخاص مع الفيديو الأصلي بجودة عالية
-        final_video_path = f"final_{chat_id}.mp4"
-        os.system(f"ffmpeg -y -i {input_video_path} -i {vocals_path} -c:v copy -c:a aac -b:a 192k -map 0:v:0 -map 1:a:0 -shortest {final_video_path}")
-
-        if not os.path.exists(final_video_path):
-            bot.edit_message_text("❌ فشل دمج الصوت مع الفيديو.", chat_id, msg_id)
-            return
-
-        bot.edit_message_text("🎉 تمت العملية بنجاح! جاري الإرسال...", chat_id, msg_id)
-
-        # 6. إرسال الفيديو النهائي
-        with open(final_video_path, 'rb') as f:
-            bot.send_video(chat_id, f, caption="✅ هاد الفيديو بصوت الأشخاص فقط بدون موسيقى! 🎤", timeout=300)
+        with open(vocals_path, 'rb') as f:
+            bot.send_audio(
+                chat_id,
+                f,
+                caption="✅ هاد صوت الأشخاص بدون موسيقى! 🎤",
+                timeout=300
+            )
 
     except Exception as e:
         error_msg = f"❌ صار خطأ: {str(e)[:150]}"
         print(f"Error: {e}")
-        bot.edit_message_text(error_msg, chat_id, msg_id)
+        try:
+            bot.edit_message_text(error_msg, chat_id, msg_id)
+        except Exception:
+            bot.send_message(chat_id, error_msg)
     finally:
-        for path in [input_video_path, audio_path, vocals_path, final_video_path]:
+        for path in [input_path, audio_path, vocals_path]:
             if path and os.path.exists(path):
-                os.remove(path)
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
 
 @app.route('/' + BOT_TOKEN, methods=['POST'])
 def webhook():
