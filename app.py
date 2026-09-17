@@ -12,9 +12,6 @@ bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 app = Flask(__name__)
 user_states = {}
 
-# رابط بوت الصوت (اختياري)
-AUDIO_BOT_LINK = "https://t.me/your_audio_bot"
-
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     markup = types.InlineKeyboardMarkup(row_width=1)
@@ -75,18 +72,19 @@ def handle_media(message):
     ).start()
 
 def upload_to_fileio(file_path):
-    """رفع الملف إلى file.io والحصول على رابط عام"""
+    """رفع الملف إلى 0x0.st والحصول على رابط عام"""
     try:
         with open(file_path, 'rb') as f:
             response = requests.post(
-                'https://file.io',
+                'https://0x0.st',
                 files={'file': f},
-                timeout=120
+                timeout=180
             )
         if response.status_code == 200:
-            result = response.json()
-            return result.get('link')
-        return None
+            return response.text.strip()
+        else:
+            print(f"Upload failed: {response.status_code}")
+            return None
     except Exception as e:
         print(f"Upload error: {e}")
         return None
@@ -120,7 +118,7 @@ def process_media(bot, chat_id, file_id, media_type, msg_id):
         else:
             audio_path = input_path
 
-        # 3. رفع الصوت إلى file.io
+        # 3. رفع الصوت إلى 0x0.st
         bot.edit_message_text("📤 جاري رفع الملف للمعالجة...", chat_id, msg_id)
         public_url = upload_to_fileio(audio_path)
 
@@ -156,7 +154,7 @@ def process_media(bot, chat_id, file_id, media_type, msg_id):
 
         # 6. تنزيل ملف vocals
         bot.edit_message_text("📥 جاري تنزيل صوت الأشخاص...", chat_id, msg_id)
-        vocals_response = requests.get(vocals_url, timeout=120)
+        vocals_response = requests.get(vocals_url, timeout=180)
         vocals_path = f"vocals_{chat_id}.wav"
 
         with open(vocals_path, 'wb') as f:
